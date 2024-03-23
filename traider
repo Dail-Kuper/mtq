@@ -1,0 +1,1412 @@
+//+------------------------------------------------------------------+
+//|                                                  ADX+EMA+ATR.mq4 |
+//|                                                   Kutyavin Anton |
+//|                                                             none |
+//+------------------------------------------------------------------+
+#property copyright "Kutyavin Anton"
+#property link      "none"
+
+//--- input parameters
+//------------------------------------------------------------------+
+// внешние входящие параметры
+extern int       ADX_period=18;          // период АДХ
+extern int       EMA_period=30;         // ЕМА период
+extern int       ATR_period=18;        // АТР период
+extern int       Slippage=3;    // параметр максимального отклонения цены при отсылании ордера
+extern int       money_strategy=0;       // возможность в программе выбирать стратегии управления капиталом
+extern int       money_strategy_param=0;   // параметр для стратегии управления капиталом
+extern double    ADX_level=20;          // уровень АДХ выше которого надо входить в рынок
+extern double    ATR_koef_TP=1.75;         // Коефициент на который надо умножить АТР для нахождения уровня тэйк профит
+extern double    ATR_koef_SL=1.75;         // Коефициент на который надо умножить АТР для нахождения уровня стоп лос
+//-------------------------------------------------------------------+
+#include <WinUser32.mqh>  // нужно для работі Massage box'a
+//-------------------------------------------------------------------+
+//----- вспомогательные параметры
+int MyMinBars=0;          // переменная нужная для проверки минимального количества баров для работы эксперта
+datetime MyTime=0;                        // вспомогаельная переменная для нахожденяия нового бара
+bool NewBar=0;                            // показатель нового бара
+//-------------------------------------------------------------------+
+
+bool Working=true;         // переменная переключатель будет ли работать єксперт по какой либо причине
+bool ExpertOnly;   // переменная для политики учета ордеров, толи допускать наличие других ордеров толи нет
+bool HaveDeal;      // переменная флаг, что эксперт имеет открытую сделку
+bool openshort;   // пеменная - флаг открытие короткой позиции
+bool openlong;   // переменная флаг на открытие длинной позиции
+bool mybool;     // вспомогательная переменная для ф-ции ордер селект
+//-------------------------------------------------------------------+
+//--------- GV переменные
+
+datetime MyGV=0;  // переменная для использования глобальной переменной
+datetime GVordOpenTimeDT;                       //записи времени открытие ордера
+
+string GVordOpenTimevalue;
+double GVOrdOpenTimeDBL;
+
+string GVticket="GVticket";
+string GVordOpenTime="GVordOpenTime";
+string GVLot ="GVLot";
+string GVSL ="GVSL";
+string GVTP ="GVTP";
+string GVExpertOnly="GVExpertOnly";
+string GVHaveDeal="GVHaveDeal";
+
+string GVMyAccBal="GVMyAccBal";
+string GVMyInitAccBal="GVMyInitAccBal";
+string GVOthAccBal="GVOthAccBal";
+string GVOthInitAccBal="GVOthInitAccBal";
+
+int GVquantity;
+//-------------------------------------------------------------------+
+//---  Переменные для обработки ошибок
+string TradeErrMas [149,2];
+string InternalErrMas [208,2];
+int err_i=0;
+
+//--------------- переменные для торговли
+
+double MyAccBal; // переменная для учета средств на счету
+double MyInitAccBal; // переменная в которой храниться первоначальній остаток
+
+double OthAccBal;
+double OthInitAccBal;
+
+int reply;  // переменная для работы с MessageBox
+datetime MyOrdOpenTime;  //  переменная для хранения времени открытия моего ордера
+double my_ord_open_time;   // поскольку придется конвертировать ее в переменную типа дабл и обратно
+double my_ord_tp,my_ord_tp_pr;           //переменные для храрения значения стоп лоса и тейк профита моих ордеров
+double my_ord_sl,my_ord_sl_pr; 
+double Mylot,mylotx,myloty;  //    переменная для значения лота согласно соответствующим параметрам, и доп переменные
+double maxlot;  // переменная для проверки максимального разрешенного значения лота у брокера
+double stoplvlx;  // переменная для расчета мин дистанции для стоп тп и сл приказов
+//вспомагательные переменные для  закрытыя ордеров при необходимости в ф-ции ордер инспект
+double ticket, lots, price;
+
+double all_lot;   // переменная для складывания всех лотов а потом умножения на залоговые средства
+double marginit;   // переменная для начальной залоговой маржи
+double CheckAcc; // переменная для проверки баланса при совместном использовании депозита советником и трейдером
+
+string Mysimb;   // переменная для присвоения значение валютной паре по которой работает эксперт
+double myticket; // пермеменная для записи номера тикета ордера
+string MyOrdComment ="10";
+string subordcomstr;
+int subordcomint;
+//-------------------------------------------------------------------+
+//   переменные для определения торговых критериев
+double EMA1,EMA2,ADX1,ADX2,DIpos,DIneg,ATR1;
+//-------------------------------------------------------------------+
+
+//-------------------------------------------------------------------+
+
+//-------------------------------------------------------------------+
+// универсальный счетчики
+int i,j,pr,sec,x,k;   // из них п и с єто праймери и секондари количество совпадений в поиске нужныр ордеров
+//-------------------------------------------------------------------+
+
+//-------------------------------------------------------------------+
+// переменные для отображения в коментах
+// решено разбросать комент по всему телу старт
+string Comtext1;   // для отображения состояния эксперта
+int MyComtext1=0; // вспомагательная, которой присваивается значение состояния, и потом соответственно отображается 
+string Comtext2;  // для отображения стоп левла и фриз левла
+double stoplvl,stoplvl_prelast;             // для стоп левла вспомогательная
+int com_i;              // итое для 2 го блока коментариев
+string Comtext3;   // торговая стратегия исходя из внешних настроить
+string Comtext4;   // текущий баланс средств эксперта
+string Comtext5;  // переменная для отображения суммы  и с какой частью депозита работает эксперт, начальная сумма
+string Comtext6;   // переменная по количеству совпадений при поиске ордеров
+//-------------------------------------------------------------------+
+// перменные для того что бы можно было время в строчку и обратно переделывать
+string yyyy,mo,dd,hh,mi,se;
+
+
+//-------------------------------------------------------------------+
+
+
+
+//####################################################################
+//####################################################################
+//+------------------------------------------------------------------+
+//| expert initialization function                                   |
+//+------------------------------------------------------------------+
+int init()
+   {
+    Working=true;   // эксперт работает по умолчанию
+//-------------------------------------------------------------------+
+// Блок для работы с ошибками
+     for (err_i=0; err_i<=148; err_i=err_i+1) // заполняем массив значением по умолчанию в пустые строки
+        {
+         TradeErrMas[err_i,0]="ERR_NO_DESCRIPTION";  //заполняем его по умолчанию значение для которого нет описания
+         TradeErrMas[err_i,1] ="Для данной торговой ошибки нет описания";
+        }
+//-------------------------------------------------------------------+
+// -----  заполняем нужными значениями ошибки
+     TradeErrMas [0,0] = "ERR_NO_ERROR";
+     TradeErrMas [0,1] = "Нет ошибки";
+     TradeErrMas [1,0] = "ERR_NO_RESULT";
+     TradeErrMas [1,1] = "Нет ошибки, но результат неизвестен";
+     TradeErrMas [2,0] ="ERR_COMMON_ERROR";
+     TradeErrMas [2,1] ="Общая ошибка";
+     TradeErrMas [3,0] ="ERR_INVALID_TRADE_PARAMETERS";
+     TradeErrMas [3,1] ="Неправильные параметры";
+     TradeErrMas [4,0] ="ERR_SERVER_BUSY";
+     TradeErrMas [4,1] ="Торговый сервер занят";
+     TradeErrMas [5,0] ="ERR_OLD_VERSION";
+     TradeErrMas [5,1] ="Старая версия клиентского терминала";
+     TradeErrMas [6,0] ="ERR_NO_CONNECTION";
+     TradeErrMas [6,1] ="Нет связи с торговым сервером";
+     TradeErrMas [7,0] ="ERR_NOT_ENOUGH_RIGHTS";
+     TradeErrMas [7,1] ="Недостаточно прав";
+     TradeErrMas [8,0] ="ERR_TOO_FREQUENT_REQUESTS";
+     TradeErrMas [8,1] ="Слишком частые запросы";
+     TradeErrMas [9,0] ="ERR_MALFUNCTIONAL_TRADE";
+     TradeErrMas [9,1] ="Недопустимая операция нарушающая функционирование сервера";
+     TradeErrMas [64,0] ="ERR_ACCOUNT_DISABLED";
+     TradeErrMas [64,1] ="Счет заблокирован";
+     TradeErrMas [65,0] ="ERR_INVALID_ACCOUNT";
+     TradeErrMas [65,1] ="Неправильный номер счета";
+     TradeErrMas [128,0] ="ERR_TRADE_TIMEOUT";
+     TradeErrMas [128,1] ="Истек срок ожидания совершения сделки";
+     TradeErrMas [129,0] ="ERR_INVALID_PRICE";
+     TradeErrMas [129,1] ="Неправильная цена";
+     TradeErrMas [130,0] ="ERR_INVALID_STOPS";
+     TradeErrMas [130,1] ="Неправильные стопы";
+     TradeErrMas [131,0] ="ERR_INVALID_TRADE_VOLUME";
+     TradeErrMas [131,1] ="Неправильный объем";
+     TradeErrMas [132,0] ="ERR_MARKET_CLOSED";
+     TradeErrMas [132,1] ="Рынок закрыт";
+     TradeErrMas [133,0] ="ERR_TRADE_DISABLED";
+     TradeErrMas [133,1] ="Торговля запрещена";
+     TradeErrMas [134,0] ="ERR_NOT_ENOUGH_MONEY";
+     TradeErrMas [134,1] ="Недостаточно денег для совершения операции";
+     TradeErrMas [135,0] ="ERR_PRICE_CHANGED";
+     TradeErrMas [135,1] ="Цена изменилась";
+     TradeErrMas [136,0] ="ERR_OFF_QUOTES";
+     TradeErrMas [136,1] ="Нет цен";
+     TradeErrMas [137,0] ="ERR_BROKER_BUSY";
+     TradeErrMas [137,1] ="Брокер занят";
+     TradeErrMas [138,0] ="ERR_REQUOTE";
+     TradeErrMas [138,1] ="Новые цены";
+     TradeErrMas [139,0] ="ERR_ORDER_LOCKED";
+     TradeErrMas [139,1] ="Ордер заблокирован и уже обрабатывается";
+     TradeErrMas [140,0] ="ERR_LONG_POSITIONS_ONLY_ALLOWED";
+     TradeErrMas [140,1] ="Разрешена только покупка";
+     TradeErrMas [141,0] ="ERR_TOO_MANY_REQUESTS";
+     TradeErrMas [141,1] ="Слишком много запросов";
+     TradeErrMas [145,0] ="ERR_TRADE_MODIFY_DENIED";
+     TradeErrMas [145,1] ="Модификация запрещена, так как ордер слишком близок к рынку";
+     TradeErrMas [146,0] ="ERR_TRADE_CONTEXT_BUSY";
+     TradeErrMas [146,1] ="Подсистема торговли занята";
+     TradeErrMas [147,0] ="ERR_TRADE_EXPIRATION_DENIED";
+     TradeErrMas [147,1] ="Использование даты истечения ордера запрещено брокером";
+     TradeErrMas [148,0] ="ERR_TRADE_TOO_MANY_ORDERS";
+     TradeErrMas [148,1] ="Количество открытых и отложенных ордеров достигло предела, установленного брокером";
+//---- работа с ошибками при торговле
+//------------------------------------------------------------------
+
+
+//--- Блок работы с внутренними ошибками
+     for (err_i =0; err_i<=207; err_i=err_i+1) // заполняем массив значением по умолчанию
+        {
+         InternalErrMas [err_i,0] ="ERR_NO_DESCRIPTION";  // то заполняем его элемент значением для которого нет описания
+         InternalErrMas [err_i,1] ="Для данной торговой ошибки нет описания";
+        }
+//----------------------------------------------------------------
+     InternalErrMas [0,0] ="ERR_NO_MQLERROR";
+     InternalErrMas [0,1] ="Нет ошибки";
+     InternalErrMas [1,0] ="ERR_WRONG_FUNCTION_POINTER";
+     InternalErrMas [1,1] ="Неправильный указатель функции";
+     InternalErrMas [2,0] ="ERR_ARRAY_INDEX_OUT_OF_RANGE";
+     InternalErrMas [2,1] ="Индекс массива - вне диапазона";
+     InternalErrMas [3,0] ="ERR_NO_MEMORY_FOR_FUNCTION_CALL_STACK";
+     InternalErrMas [3,1] ="Нет памяти для стека функций";
+     InternalErrMas [4,0] ="ERR_RECURSIVE_STACK_OVERFLOW";
+     InternalErrMas [4,1] ="Переполнение стека после рекурсивного вызова";
+     InternalErrMas [5,0] ="ERR_NOT_ENOUGH_STACK_FOR_PARAMETER";
+     InternalErrMas [5,1] ="На стеке нет памяти для передачи параметров";
+     InternalErrMas [6,0] ="ERR_NO_MEMORY_FOR_PARAMETER_STRING";
+     InternalErrMas [6,1] ="Нет памяти для строкового параметра";
+     InternalErrMas [7,0] ="ERR_NO_MEMORY_FOR_TEMP_STRING";
+     InternalErrMas [7,1] ="Нет памяти для временной строки";
+     InternalErrMas [8,0] ="ERR_NOT_INITIALIZED_STRING";
+     InternalErrMas [8,1] ="Неинициализированная строка";
+     InternalErrMas [9,0] ="ERR_NOT_INITIALIZED_ARRAYSTRING";
+     InternalErrMas [9,1] ="Неинициализированная строка в массиве";
+     InternalErrMas [10,0] ="ERR_NO_MEMORY_FOR_ARRAYSTRING";
+     InternalErrMas [10,1] ="Нет памяти для строкового массива";
+     InternalErrMas [11,0] ="ERR_TOO_LONG_STRING";
+     InternalErrMas [11,1] ="Слишком длинная строка";
+     InternalErrMas [12,0] ="ERR_REMAINDER_FROM_ZERO_DIVIDE";
+     InternalErrMas [12,1] ="Остаток от деления на ноль";
+     InternalErrMas [13,0] ="ERR_ZERO_DIVIDE";
+     InternalErrMas [13,1] ="Деление на ноль";
+     InternalErrMas [14,0] ="ERR_UNKNOWN_COMMAND";
+     InternalErrMas [14,1] ="Неизвестная команда";
+     InternalErrMas [15,0] ="ERR_WRONG_JUMP";
+     InternalErrMas [15,1] ="Неправильный переход";
+     InternalErrMas [16,0] ="ERR_NOT_INITIALIZED_ARRAY";
+     InternalErrMas [16,1] ="Неинициализированный массив";
+     InternalErrMas [17,0] ="ERR_DLL_CALLS_NOT_ALLOWED";
+     InternalErrMas [17,1] ="Вызовы DLL не разрешены";
+     InternalErrMas [18,0] ="ERR_CANNOT_LOAD_LIBRARY";
+     InternalErrMas [18,1] ="Невозможно загрузить библиотеку";
+     InternalErrMas [19,0] ="ERR_CANNOT_CALL_FUNCTION";
+     InternalErrMas [19,1] ="Невозможно вызвать функцию";
+     InternalErrMas [20,0] ="ERR_EXTERNAL_EXPERT_CALLS_NOT_ALLOWED";
+     InternalErrMas [20,1] ="Вызовы внешних библиотечных функций не разрешены";
+     InternalErrMas [21,0] ="ERR_NOT_ENOUGH_MEMORY_FOR_RETURNED_STRING";
+     InternalErrMas [21,1] ="Недостаточно памяти для строки, возвращаемой из функции";
+     InternalErrMas [22,0] ="ERR_SYSTEM_BUSY";
+     InternalErrMas [22,1] ="Система занята";
+     InternalErrMas [50,0] ="ERR_INVALID_FUNCTION_PARAMETERS_COUNT";
+     InternalErrMas [50,1] ="Неправильное количество параметров функции";
+     InternalErrMas [51,0] ="ERR_INVALID_FUNCTION_PARAMETER_VALUE";
+     InternalErrMas [51,1] ="Недопустимое значение параметра функции";
+     InternalErrMas [52,0] ="ERR_STRING_FUNCTION_INTERNAL_ERROR";
+     InternalErrMas [52,1] ="Внутренняя ошибка строковой функции";
+     InternalErrMas [53,0] ="ERR_SOME_ARRAY_ERROR";
+     InternalErrMas [53,1] ="Ошибка массива";
+     InternalErrMas [54,0] ="ERR_INCORRECT_SERIES_ARRAY_USING";
+     InternalErrMas [54,1] ="Неправильное использование массива-таймсерии";
+     InternalErrMas [55,0] ="ERR_CUSTOM_INDICATOR_ERROR";
+     InternalErrMas [55,1] ="Ошибка пользовательского индикатора";
+     InternalErrMas [56,0] ="ERR_INCOMPATIBLE_ARRAYS";
+     InternalErrMas [56,1] ="Массивы несовместимы";
+     InternalErrMas [57,0] ="ERR_GLOBAL_VARIABLES_PROCESSING_ERROR";
+     InternalErrMas [57,1] ="Ошибка обработки глобальныех переменных";
+     InternalErrMas [58,0] ="ERR_GLOBAL_VARIABLE_NOT_FOUND";
+     InternalErrMas [58,1] ="Глобальная переменная не обнаружена";
+     InternalErrMas [59,0] ="ERR_FUNCTION_NOT_ALLOWED_IN_TESTING_MODE";
+     InternalErrMas [59,1] ="Функция не разрешена в тестовом режиме";
+     InternalErrMas [60,0] ="ERR_FUNCTION_NOT_CONFIRMED";
+     InternalErrMas [60,1] ="Функция не подтверждена";
+     InternalErrMas [61,0] ="ERR_SEND_MAIL_ERROR";
+     InternalErrMas [61,1] ="Ошибка отправки почты";
+     InternalErrMas [62,0] ="ERR_STRING_PARAMETER_EXPECTED";
+     InternalErrMas [62,1] ="Ожидается параметр типа string";
+     InternalErrMas [63,0] ="ERR_INTEGER_PARAMETER_EXPECTED";
+     InternalErrMas [63,1] ="Ожидается параметр типа integer";
+     InternalErrMas [64,0] ="ERR_DOUBLE_PARAMETER_EXPECTED";
+     InternalErrMas [64,1] ="Ожидается параметр типа double";
+     InternalErrMas [65,0] ="ERR_ARRAY_AS_PARAMETER_EXPECTED";
+     InternalErrMas [65,1] ="В качестве параметра ожидается массив";
+     InternalErrMas [66,0] ="ERR_HISTORY_WILL_UPDATED";
+     InternalErrMas [66,1] ="Запрошенные исторические данные в состоянии обновления";
+     InternalErrMas [67,0] ="ERR_TRADE_ERROR";
+     InternalErrMas [67,1] ="Ошибка при выполнении торговой операции";
+     InternalErrMas [99,0] ="ERR_END_OF_FILE";
+     InternalErrMas [99,1] ="Конец файла";
+     InternalErrMas [100,0] ="ERR_SOME_FILE_ERROR";
+     InternalErrMas [100,1] ="Ошибка при работе с файлом";
+     InternalErrMas [101,0] ="ERR_WRONG_FILE_NAME";
+     InternalErrMas [101,1] ="Неправильное имя файла";
+     InternalErrMas [102,0] ="ERR_TOO_MANY_OPENED_FILES";
+     InternalErrMas [102,1] ="Слишком много открытых файлов";
+     InternalErrMas [103,0] ="ERR_CANNOT_OPEN_FILE";
+     InternalErrMas [103,1] ="Невозможно открыть файл";
+     InternalErrMas [104,0] ="ERR_INCOMPATIBLE_ACCESS_TO_FILE";
+     InternalErrMas [104,1] ="Несовместимый режим доступа к файлу";
+     InternalErrMas [105,0] ="ERR_NO_ORDER_SELECTED";
+     InternalErrMas [105,1] ="Ни один ордер не выбран";
+     InternalErrMas [106,0] ="ERR_UNKNOWN_SYMBOL";
+     InternalErrMas [106,1] ="Неизвестный символ";
+     InternalErrMas [107,0] ="ERR_INVALID_PRICE_PARAM";
+     InternalErrMas [107,1] ="Неправильный параметр цены для торговой функции";
+     InternalErrMas [108,0] ="ERR_INVALID_TICKET";
+     InternalErrMas [108,1] ="Неверный номер тикета";
+     InternalErrMas [109,0] ="ERR_TRADE_NOT_ALLOWED";
+     InternalErrMas [109,1] ="Торговля не разрешена";
+     InternalErrMas [110,0] ="ERR_LONGS_NOT_ALLOWED";
+     InternalErrMas [110,1] ="Длинные позиции не разрешены";
+     InternalErrMas [111,0] ="ERR_SHORTS_NOT_ALLOWED";
+     InternalErrMas [111,1] ="Короткие позиции не разрешены";
+     InternalErrMas [200,0] ="ERR_OBJECT_ALREADY_EXISTS";
+     InternalErrMas [200,1] ="Объект уже существует";
+     InternalErrMas [201,0] ="ERR_UNKNOWN_OBJECT_PROPERTY";
+     InternalErrMas [201,1] ="Запрошено неизвестное свойство объекта";
+     InternalErrMas [202,0] ="ERR_OBJECT_DOES_NOT_EXIST";
+     InternalErrMas [202,1] ="Объект не существует";
+     InternalErrMas [203,0] ="ERR_UNKNOWN_OBJECT_TYPE";
+     InternalErrMas [203,1] ="Неизвестный тип объекта";
+     InternalErrMas [204,0] ="ERR_NO_OBJECT_NAME";
+     InternalErrMas [204,1] ="Нет имени объекта";
+     InternalErrMas [205,0] ="ERR_OBJECT_COORDINATES_ERROR";
+     InternalErrMas [205,1] ="Ошибка координат объекта";
+     InternalErrMas [206,0] ="ERR_NO_SPECIFIED_SUBWINDOW";
+     InternalErrMas [206,1] ="Не найдено указанное подокно";
+     InternalErrMas [207,0] ="ERR_SOME_OBJECT_ERROR";
+     InternalErrMas [207,1] ="Ошибка при работе с объектом";
+// ------------------------------------------------------------------+
+//---                конец заполнения описания ошибок
+//-------------------------------------------------------------------+
+
+
+//-------------------------------------------------------------------+
+     money_strategy_param=NormalizeDouble(money_strategy_param,0); // убираем все нули после запятой
+     money_strategy=NormalizeDouble(money_strategy,0);  // убираем случайные знаки после запятой в торговой стратегии
+//-------------------------------------------------------------------+
+
+//-------------------------------------------------------------------+
+// проверка правильности заполнения параметров торговой стратегии
+//-------------------------------------------------------------------+
+     if(money_strategy<0 || money_strategy>2) // если у нас не правильные параметры торговой стратегии то выводим алерт и перестае работать
+        {
+         Alert("Указанный номер торговой стратегии является неверным, укажите целое число, или 0 или 1 или 2. На данный момент эксперт не работает");
+         Working=false;
+         return(0);
+        }
+
+//-------------------------------------------------------------------+
+     if(money_strategy==0)                  // если торговая стратегия процент от депозита то
+	    {	// то если значение за пределами от 0 до 15,то прекращаем работать и выводим алерт
+	     if (money_strategy_param<0 || money_strategy_param>15.0001)
+		    {
+		     Alert ("Выбрана торговая стратегия торговать с минимальными рисками. Указанные параметры стратегии должны быть в пределах от 0 до 15, исправьте значения и перезапустите эксперта. На данный момент єксперт не работает");
+		     Working=false;
+		     return(0);
+		    }
+        }
+
+//----------------------------------------------------------------------+
+        if(money_strategy==1)                  // если торговая стратегия процент от депозита то
+	    {	// то если значение за пределами от 0 до 15,то прекращаем работать и выводим алерт
+	    if (money_strategy_param<0 || money_strategy_param>15.0001)
+		    {
+		     Alert ("Выбрана торговая стратегия торговать процентом от депозита. Указанное число  процентов противоречит здравому смыслу. Укажите целое число в пределах от 0 до 15, и перезапустите эксперта. На данный момент єксперт не работает");
+		     Working=false;
+		     return(0);
+		    }
+	    }
+//----------------------------------------------------------------------+
+
+     if(money_strategy==2)  //  если у нас реинвестирование  то целесообразно
+	    {	//  что б процент реинвестирования был от 40 ка до 100 при чем 100 крайне нежелательно 
+	     if (money_strategy_param<39.999 || money_strategy_param>95.001)
+		    {		// 100 это значит что у нас стратегия увеличение лота при увеличении депозита в 2 раза 
+		     Alert ("Выбрана торговая стратегия реинвестирование. Указанное число процентов для реинвестирования противоречит здравому смыслу. Укажите целое число в пределах от 40 до 100, и перезапустите эксперта. На данный момент єксперт не работает");
+		     Working=false;
+		     return(0);
+		    }
+	    }
+     if (AccountBalance()<1000) // если баланс на счету маленький, то выводим алерт и не работаем
+	    {
+	     Alert ("Недостаточно средств на счету, баланс равен ",AccountBalance(),". Эксперт не работает");
+	     Working=false;
+	     return(0);
+	    }
+	
+//-------------------------------------------------------------------+
+// строчка нужная для определения новых баров
+     MyTime=Time[0];
+//-------------------------------------------------------------------+
+
+     err_i=0;  //     по умолчанию нет ошибок
+     Mysimb=Symbol();  // запоминаем валютную пару по которой работаем
+     HaveDeal=0;  // по умолчанию мы не в сделке
+     stoplvl_prelast=MarketInfo(Mysimb,MODE_STOPLEVEL);             // записи для второй строчки функции коментирования
+	 Alert("В конце инита поставили флаг работаем");
+     Working=true;
+	 CalcLot();
+//-------------------------------------------------------------------+
+
+
+
+
+//####################################################################
+//-------------------------------------------------------------------+
+//--- Попытаемся определить может эксперт перезапускался и нужно начать работу с прошлого места
+
+
+     if (GlobalVariablesTotal()==11) // если у нас все глобальные переменные установлены, то
+        {                          // то мы спросим, хотите продолжить с момента разрыва
+         reply=MessageBox("По всей видимости эксперт уже работал на этом компьютере, хотите продолжить работу с места последнего запуска, если есть необходимость поменять размер рабочего депозита эксперта, дождитесь закрытия ордера, и а этом вопросе выберите нет", "Вопрос", MB_YESNO|MB_ICONQUESTION|MB_TOPMOST);
+         if (reply==IDYES)   // если да, то присвоим из глобальных переменных значения соответствующих им внешних переменных
+            {
+
+             ExpertOnly=GlobalVariableGet (GVExpertOnly);
+             HaveDeal=GlobalVariableGet (GVHaveDeal);
+
+             Mylot=GlobalVariableGet (GVLot);
+             my_ord_sl_pr=GlobalVariableGet (GVSL);
+             my_ord_tp_pr=GlobalVariableGet (GVTP);
+
+             myticket= GlobalVariableGet(GVticket);
+             GVOrdOpenTimeDBL=GlobalVariableGet(GVordOpenTime);
+             GVordOpenTimevalue=DoubleToStr(GVOrdOpenTimeDBL,0);
+             yyyy=StringSubstr(GVordOpenTimevalue,0,4);
+             mo=StringSubstr(GVordOpenTimevalue,4,2);
+             dd=StringSubstr(GVordOpenTimevalue,6,2);
+             hh=StringSubstr(GVordOpenTimevalue,8,2);
+             mi=StringSubstr(GVordOpenTimevalue,10,2);
+             se=StringSubstr(GVordOpenTimevalue,12,2);
+             GVordOpenTimevalue=StringConcatenate(yyyy,".",mo,".",dd," ",hh,":",mi,":",se);
+             GVordOpenTimeDT=StrToTime(GVordOpenTimevalue);
+
+
+             MyAccBal=GlobalVariableGet (GVMyAccBal);
+             MyInitAccBal=GlobalVariableGet (GVMyInitAccBal);
+             OthAccBal=GlobalVariableGet (GVOthAccBal);
+             OthInitAccBal=GlobalVariableGet (GVOthInitAccBal);
+
+             return(0); // и выйдем из инита
+            }
+        }
+//--- если глобальные переменные есть, но их мало, значит эксперт работал, но не совершил сделку, и можно начать работу заново
+     if (GlobalVariablesTotal()<11 && GlobalVariablesTotal()>0) reply=MessageBox("Эксперт включался до этого на этом терминале, но не было совершено ни одной сделки, поэтому работу будет начата заново","Важно",MB_OK|MB_ICONINFORMATION|MB_TOPMOST);
+   
+
+//------------------------------------------------------------------+
+
+
+
+     MyAccBal=AccountBalance();  // по умолчанию сумма средств для управления - весь депозит
+     MyInitAccBal=AccountBalance();
+     ExpertOnly=1; // по умолчанию работает тольо эксперт
+     OthAccBal=0;
+     OthInitAccBal=0; 
+
+
+//-------------------------------------------------------------------+
+//-----       блок оповещения пользователя - разьяснения по стратегиям
+     reply=MessageBox("Если по какой то причине эксперт был остановлен, то можно попытаться возобновить с работу эксперта с того места когда он был выклдючен, но только в течении 4 ех недель и только если эксперт открывал ордера","Важные сведения",MB_OK|MB_ICONINFORMATION|MB_TOPMOST);
+     reply=MessageBox("При money_strategy=0, советник различает money_strategy_param=0 как торговать мин. лотом всегда, = 1 - увеличение мин. лота в два раза при увеличении депозита вдвое, = 2-15 - торговать с таким риском, увеличение лота в 2 раза при увеличении депозита вдвое","Ознакомление с торговыми стратегиями",MB_OK|MB_ICONINFORMATION|MB_TOPMOST);
+     reply=MessageBox("При money_strategy=1, советник различает money_strategy_param равное от 1 до 15, что означает процент риска на сделку, значение размера лота округляется в меньшую сторону, но оно не может быть меньше значения минимального лота","Ознакомление с торговыми стратегиями",MB_OK|MB_ICONINFORMATION|MB_TOPMOST);
+     reply=MessageBox("При money_strategy=2, советник различает money_strategy_param равное от 40 до 95 что означает, что по указанным процентам будет посчитана сумма от начального баланса, и каждый раз при увеличении баланса на эту сумму, будет увеличиться и лот для торговли","Ознакомление с торговыми стратегиями",MB_OK|MB_ICONINFORMATION|MB_TOPMOST);
+     reply=MessageBox("Обратите внимание на то, что при выборе суммы депозита для работы эксперта - весь депозит, открытие любых других сделок приведут к прекращению работы эксперта","Важно",MB_OK|MB_ICONWARNING|MB_TOPMOST);
+     reply=MessageBox("И конечно же, крайне нежелательно удалять ордера и открытые позиции эксперта, потому как после этого он перестает работать","Важно",MB_OK|MB_ICONWARNING|MB_TOPMOST);
+
+
+//-----------------------------------------------------------------------+
+ 
+     while (true)
+        {
+         reply=0;  // на всякий случай
+         reply=MessageBox("Нужно определить размер депозита с которым будет работать эксперт. Хотите что бы на этом счете работал только Эксперт","Определение суммы средств в распоряжении эксперта", MB_YESNO|MB_ICONQUESTION|MB_TOPMOST);
+         if (reply==IDYES)
+            {
+             MyAccBal=AccountBalance();// если пользователь согласился отдать весь баланс єксперту, и
+             MyInitAccBal=AccountBalance();  //логично если первый раз эксперт работает то начальный баланс равен всему депозиту
+             OthAccBal=0;
+             OthInitAccBal=0; 
+             ExpertOnly=1;   // мы ставим флаг работает только эксперт и 
+             break;  // выходим из цикла
+            }
+       
+         reply=MessageBox("Нужно определить размер депозита с которым будет работать эксперт. Хотите что бы на этом счете Эксперт работал только с половиной депозита","Определение суммы средств в распоряжении эксперта", MB_YESNO|MB_ICONQUESTION|MB_TOPMOST);
+         if (reply==IDYES)
+	        {
+	         MyAccBal=AccountBalance()/2; //  если пользователь согласился отдать эксперту половину депозита то, 
+	   
+             if(MyAccBal<1000)   // проверяем достаточно ли средств после перераспределения
+	            {
+		         Alert ("При таком выборе размера депозита, с которым будет работать эксперт, сумма доступная эксперту для работы меньше 1000 долл США, нужно изменить выбор рабочей суммы");
+         		 continue;
+		        }else
+	            {
+		         break;
+          		 MyAccBal=NormalizeDouble(MyAccBal,2);
+	          	 MyInitAccBal=MyAccBal;
+     	     	 OthAccBal=AccountBalance()-MyAccBal;
+	     	     OthInitAccBal=OthAccBal;
+                 ExpertOnly=0;   // переcтавляем флаг что работает и эксперт и пользователь
+		        }
+            }
+         reply=MessageBox("Нужно определить размер депозита с которым будет работать эксперт. Хотите что бы на этом счете Эксперт работал только с 1 000 USD", "Определение суммы средств в распоряжении эксперта", MB_YESNO|MB_ICONQUESTION|MB_TOPMOST);
+         if (reply==IDYES)
+	        {
+     	     MyAccBal=1000;  // третий выриант при котором эксперт работает только с 1000 долл, поскольку баланс до этого проверялся,
+	         MyInitAccBal=1000;
+     	     OthAccBal=AccountBalance()-MyAccBal;
+	         OthInitAccBal=OthAccBal;
+	         ExpertOnly=0;  //  то конфликтов быть не должно
+	         break;
+	        }
+        }
+
+
+//----
+     
+     return(0);
+    }
+//+------------------------------------------------------------------+
+//| expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+int deinit()
+    {
+
+     Alert("Эксперт выгружен"); 
+
+     return(0);
+    }
+ 
+
+//####################################################################
+//####################################################################
+//+------------------------------------------------------------------+
+//| expert start function                                            |
+//+------------------------------------------------------------------+
+int start()
+     {
+   
+//+------------------------------------------------------------------+
+// проверка достаточно ли баров для работы
+//+------------------------------------------------------------------+
+
+     if (EMA_period>= ATR_period || EMA_period >= ADX_period*2)
+        {                               //--- верхняя длинная строчка-проверяем если самое большое значение период ЕМА
+         MyMinBars=EMA_period;         // возвращаем наибольшее значение в соответствии с условием
+        }else
+        {
+         if (ATR_period*2>=EMA_period|| ADX_period*2>=ATR_period)
+            {      //--- верхняя длинная строчка-проверяем если самое большое значение период АДХ      
+             MyMinBars=ADX_period*2;
+            }else       // возвращаем наибольшее значение
+            {
+             MyMinBars=ATR_period;   // иначе остается что наибольшее значение баров нужное для работы периодд АТР
+            }
+        }
+     if (Bars < MyMinBars+1) //проверяем  хватает ли баров для работы советника
+        {
+         MyMinBars=MyMinBars+1;
+         Alert ("Недостаточно баров для работы советника, надо ",MyMinBars);  // если истинно то сообщаем на экран
+         return(0);                                                                  // и выходим из спец функции старт, ждем след тика
+        } 
+//---------------------------------------------------------------------+  
+//------  ведем учет ордеров  
+     if (ExpertOnly==1) reply=OrderInspectEO();
+     if (ExpertOnly==0) reply=OrderInspect();
+  
+  
+//--------------------------------------------------------------------+
+     if (Working==false)
+        {
+         Alert (GetLastError());
+         Alert ("По одной из причин Эксперт не работает, проверьте наличие сообщений об ошибках, если таковых не имеется обратитесь к программисту");
+         Sleep(10000);  // это что б на каждом тике не кричать что эксперт не работает
+         return(0);  // если по какой то причине где то фатальная ошибка и флаг установлен на выключение, то перестаем работать
+        }
+  
+
+
+//---------------------------------------------------------------------+
+     if (HaveDeal==1) Comtext1=StringConcatenate("Имеется открытая позиция по тикету ",myticket);
+     if (HaveDeal==0) Comtext1="Ожидание торгового сигнала";
+
+//---------------------------------------------------------------------+
+     stoplvl=MarketInfo(Mysimb,MODE_STOPLEVEL);  //  следим за стоп левлом
+     
+     if(stoplvl==stoplvl_prelast)
+        {
+         Comtext2=StringConcatenate("Стоп левел ",stoplvl);
+		}else
+		{
+         Comtext2=StringConcatenate("Стоп левел изменился ",stoplvl," вместо ",stoplvl_prelast);
+		 com_i++;
+         if (com_i==50)
+            {
+             stoplvl_prelast=stoplvl;
+			 com_i=0;
+            }
+   
+        }
+     Comtext4=StringConcatenate("Текущий баланс эксперта ",MyAccBal, "Начальный баланс Эксперта ",MyInitAccBal);   
+     Comtext5=StringConcatenate("Текущий баланс свободных средств ",OthAccBal, "Начальный баланс свободных средств ",OthInitAccBal);
+     Comment(Comtext1,"\n",Comtext2,"\n",Comtext3,"\n",Comtext4,"\n",Comtext5,"\n",Comtext6);
+
+//---------------------------------------------------------------------+      
+//    проверка есть ли новый бар, если есть и мы не в сделке, проверяем торговые критерии на вход
+//---------------------------------------------------------------------+  
+     CatchNewBar();  //Находим новый бар
+
+     if (NewBar==1 && HaveDeal==0) reply=TradeCriterionCheck();  // и если мы его нашли,  и мы не в сделке, то проверяем торговые критерии на вход
+
+
+     return(0);
+    }
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//Функция для нахождения нового бара
+//--------------------------------------------------------------------+
+void CatchNewBar()
+    {
+     NewBar=0;                                // на всякий случай обнуляем значение  показателя
+     if (MyTime!=Time[0])                    // сравниваем с показанием которое было записано ранее
+        {
+         MyTime=Time[0];                        // если истинно то записываем новое время и изменяем значение показателя
+         NewBar=1;
+         Alert ("Нашелся новый бар");
+         MyGV =GlobalVariableSet(GVMyAccBal,MyAccBal);
+         MyGV =GlobalVariableSet(GVMyInitAccBal,MyInitAccBal);
+         MyGV =GlobalVariableSet(GVOthAccBal,OthAccBal);
+         MyGV =GlobalVariableSet(GVOthInitAccBal,OthInitAccBal);
+         MyGV =GlobalVariableSet(GVExpertOnly,ExpertOnly);
+        }
+   
+    }
+ 
+    
+//--------------------------------------------------------------------+
+
+
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//      Функция для проверки торговых критериев
+//--------------------------------------------------------------------+
+int TradeCriterionCheck() // функция првоерки торговых условий
+    {
+     EMA1 = iMA(Mysimb,0,EMA_period,0,MODE_EMA,PRICE_WEIGHTED,1);  // записываем в короткую переменную значение  ема на 1 ом баре
+     EMA2 = iMA(Mysimb,0,EMA_period,0,MODE_EMA,PRICE_WEIGHTED,2);  // значение ема на 2 ом баре
+     ADX1 = iADX(Mysimb,0,ADX_period,PRICE_WEIGHTED,MODE_MAIN,1);  // значение адикс на первом баре
+     ADX2 = iADX(Mysimb,0,ADX_period,PRICE_WEIGHTED,MODE_MAIN,2);  // на втором баре
+     DIpos= iADX(Mysimb,0,ADX_period,PRICE_WEIGHTED,MODE_PLUSDI,1);  // значение DI плюс
+     DIneg= iADX(Mysimb,0,ADX_period,PRICE_WEIGHTED,MODE_MINUSDI,1);  // значение DI минус
+//---------------------------------------------------------------------+
+
+
+     if (EMA1>EMA2 && ADX1>ADX2 && ADX1>ADX_level &&DIpos>DIneg)  //   если ема на текущей закрытой свече больше ема на предыдущей свече 
+        {     //  и адикс растет и больше уровня заданного в переменной и положительный ДАЙ больше отрицательного то
+         
+         openlong=1;
+         openshort=0;
+         CalcLot();  // вызываем фунцию посчитать лот
+         if (Working==false) return(0);
+         TradeFunc();  // вызываем функцию совершения сделок и обработки ошибок
+        }
+
+     if (EMA1<EMA2 && ADX1>ADX2 && ADX1>ADX_level && DIpos<DIneg)   // если ема убывает а АДИКС растет и больше уровня 20 и ДэАЙ отрицательный
+        {    // больше ДэАЙ положительного 
+
+         openlong=0;
+         openshort=1;   // то выставляем флаги на продажу 
+         CalcLot();   // вызываем функцию расчета лота
+         if (Working==false) return(0);
+         TradeFunc();   // и после входим в рынок
+        }
+     return(0);
+	}
+//--------------------------------------------------------------------+   
+
+
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//      Функция для определения лота согласно торговой стратегии
+//--------------------------------------------------------------------+
+
+void CalcLot()     // функция для определения лота согласно торговой стратегии
+    {  // func start
+     ATR1= iATR(Mysimb,0,ATR_period,1);
+	 ATR1=ATR1*1000;
+     switch (money_strategy) // выбираем  сначала параметр торговой стратегии
+	    {
+	     case 0: 
+	        {
+	         switch (money_strategy_param)  // если он равен нулю, то  выбираем значение параметра вложенным свитч
+                {
+                 case 0:       // если параметр тоже равен нулю то это просто минимальный лот
+                    {
+	                 Mylot=0.01;
+	                 Comtext3="Торговля ведется минимальным лотом";
+	                 break;
+	                }
+	             case 1: if(MyInitAccBal>= MyAccBal)     // если равен одному, то проверяем текущий баланс меньше начального
+	                {
+	                 Mylot=0.01;   // если меньше то, ставим минимальный лот
+	                 Comtext3="Торговая стратегия - удваивание мин лота при удваивании капитала";
+	                 break;	
+	                }else
+	                {
+     	             mylotx=MyAccBal/MyInitAccBal*0.01;   // иначе умножаем минимальный лот на соотношение текущего и начального депозита
+	                 Mylot=NormalizeDouble(mylotx,2);
+	                 Comtext3="Торговая стратегия - удваивание мин лота при удваивании капитала";
+	                 break;
+	                }
+	        
+	             default:
+	                {
+	                 if(MyInitAccBal>= MyAccBal) //если у нас значения не 1 и не 0 то, опять проверяем что больше текущий или начальный баланс
+	                    {
+    	                 my_ord_sl=ATR_koef_SL*ATR1;   // если начальный больше то мы находим стоп лос в пунктах
+	                     mylotx=MyInitAccBal*money_strategy_param/my_ord_sl/1000; // вычисляем лот без ограничения знаков после запятой, учитывая процент риска на сделке, и количество пунктов стоп лоса 
+	                     Mylot=NormalizeDouble(mylotx,2); // тут получаем значение стоп лоса правильное, отбросив все лишние знаки после запятой
+	                     Comtext3="Торговая стратегия - задан процент риска на начальный капитал";
+	                     break;
+	                    }else   // если текущий баланс больше начального
+	                    {
+    	                 my_ord_sl=ATR_koef_SL*ATR1;   // иначе мы делаем все тоже самое, только
+	                     mylotx=MyInitAccBal*money_strategy_param/my_ord_sl/1000*MyAccBal/MyInitAccBal;   // тут умножение на коэф соотношение текущего баланса и старого баланса
+     	                 Mylot=NormalizeDouble(mylotx,2);   // убираем все лишние знаки после запятой
+	                     Comtext3="Торговая стратегия - задан процент риска на начальный капитал, увеличение лота при удваивании капитала";
+	                     break;
+	                    } 
+	                }
+	            }
+	        break;
+	        }
+	     case 1: // тут мы просто высчитали процент риска на сделку
+	        {
+	         my_ord_sl=ATR_koef_SL*ATR1;
+    	     mylotx=MyAccBal*money_strategy_param/my_ord_sl/1000;
+	         Mylot=NormalizeDouble(mylotx,2);
+	         Comtext3="Торговая стратегия - задан процент риска на текущий капитал";
+	         break;  
+	        }
+         case 2: if(MyInitAccBal+MyInitAccBal/100*money_strategy_param>= MyAccBal)  // реинвестирование: если начальный баланс+первая ступень реинвестирования больше текущего баланса то
+	        {
+             my_ord_sl=ATR_koef_SL*ATR1; // то лот вычисляется как раньше с 10% риском
+             mylotx=MyAccBal*10/my_ord_sl/1000;  // здесь цифра десять означает торгуем с 10% риском если наш текущий баланс меньше начального
+	         Mylot=NormalizeDouble(mylotx,2);    // отбросили все лишние знаки после запятой
+	         Comtext3="Торговая стратегия - реинвестирование";
+	         break;
+	        }else  // иначе, если мы далеко ускакали на реинвестировании, то
+	        {
+             mylotx=MyAccBal-MyInitAccBal;  // вычисляем разницу между начальным и текущим депозитом
+	         myloty=MyInitAccBal/100*money_strategy_param;   // вычисляем шаг таблицы реинвестирования
+	         myloty=mylotx/myloty;  // вычисляем сколько шагов в разнице между текущим и начальным депозитом
+             myloty=NormalizeDouble(myloty,0);	  // отбросили все что после запятой, получили целое значение шагов
+	         my_ord_sl=ATR_koef_SL*ATR1;   // высчитали  стоп лос
+	         mylotx=MyInitAccBal*10/my_ord_sl/1000;    // посчитали лот для начального капитла, с 10% риском
+	         mylotx=NormalizeDouble(mylotx,2);   // отбросили лишние нули для лота
+	         Mylot=myloty*mylotx;   // умножили посчитаный лот на количество шагов пройденных по таблице реинвестирования
+	         Comtext3="Торговая стратегия - реинвестирование";
+	         break;
+	        }
+        }
+     if(AccountBalance()<65)
+        {
+         Alert("Мало средств на счету, советник убыточный и он не работает");
+         Working=false;
+        }  
+     if (Mylot<0.01)  // тут у нас проверка случайных ошибок
+        {
+         Mylot=0.01;
+         Alert("По каким то причинам лот ордера стал равен 0, необходимо проверить программный код, на данный момент лот исправлен на минимальный");
+         // записали исправленный лот в GV переменную
+        }
+     maxlot= MarketInfo(Mysimb,MODE_MAXLOT);
+     if(Mylot>maxlot)
+        {
+         Alert ("Эксперт достик максимального значения лота, больше максимально допустимого брокером, поэтому он был исправлен на допустимый предел установленный брокером, и теперь равен ", maxlot);
+         Mylot=maxlot;
+        }
+     MyGV =GlobalVariableSet(GVLot ,Mylot);
+     if (MyGV==0) 
+	    {
+		 Alert("Ошибка при записи лота в глобальную переменную, надо проверить kode");
+		 Working=false;
+		}
+    }  //func end
+
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//      Функция для совершения торговых операций
+//--------------------------------------------------------------------+
+void TradeFunc()
+    { // start func
+     ATR1= iATR(Mysimb,PERIOD_H4,ATR_period,1);   // нашни значение АТР на первом баре
+	 Alert ("1 str ATR1=",ATR1," ATR_koef_SL=",ATR_koef_SL);
+     my_ord_sl      =  ATR_koef_SL*ATR1;    // записали величину Стоп лоса
+     my_ord_tp      =  ATR_koef_TP*ATR1;   // записали величину Тэйк профита
+     my_ord_sl      =  NormalizeDouble(my_ord_sl,Digits);  //обрезали нули после запятой в стоп лосе
+     my_ord_tp      =  NormalizeDouble(my_ord_tp,Digits);  //обрезали нули после запятой в тайк профите
+	 stoplvlx=stoplvl+Slippage;
+	 stoplvlx=stoplvlx/MathPow(10,(Digits-1));
+	 Alert("my_ord_tp=",my_ord_tp," my_ord_sl=",my_ord_sl, " stoplvlx=",stoplvlx );
+     if (stoplvlx>my_ord_sl)
+        {
+         Alert("Толи важные новости вышли, толи слишком маленький коэффициент для стоп лоса, поэтому стоп лос был исправлен на ",stoplvl+Slippage," вместо ",my_ord_sl);
+         my_ord_sl=stoplvlx;
+        }
+     if (stoplvlx>my_ord_tp)
+        {
+         Alert("Толи важные новости вышли, толи слишком маленький коэффициент для тейк профита, поэтому тейк профит был исправлен на ",stoplvl+Slippage," вместо ",my_ord_tp);
+         my_ord_tp=stoplvlx;
+        }
+     Alert ("3 str Значение my_ord_tp=",my_ord_tp);
+	 Alert ("3 str Значение my_ord_sl=",my_ord_sl);
+     if(openlong==1 && openshort==0)  // если у нас флаг на открытие длинной позиции, то
+        {
+         for (i=1; i<=8; i++) // то будем пробовать 5 раз
+            {
+             RefreshRates();  // обновили значение цен
+             my_ord_sl_pr =  Bid-my_ord_sl;   // высчитали величину цены для стоп лоса
+             my_ord_tp_pr =  Bid+my_ord_tp;    // вычислили вечичину цены для тейк профита
+             myticket=OrderSend(Mysimb,OP_BUY,Mylot,Ask,Slippage, my_ord_sl_pr, my_ord_tp_pr, MyOrdComment,5,CLR_NONE);   //посылаем ордер на сервер
+			 Alert ("4 str Значение my_ord_sl_pr=",my_ord_sl_pr);
+			 Alert ("4 str Значение my_ord_tp_pr=",my_ord_tp_pr);
+			 Alert ("5 str Значение myticket при попытке отправить ордер на сервер=",myticket);
+			 my_ord_sl_pr = NormalizeDouble (my_ord_sl_pr,Digits);
+			 my_ord_tp_pr = NormalizeDouble (my_ord_tp_pr,Digits);
+             if( myticket<0)
+                {
+                 err_i=GetLastError();   
+                 ErrFighting();
+                 Alert ("Возникла ошибка при попытке открыть ордер", TradeErrMas[err_i,1]);
+                 if(Working==false) return;     
+                }else
+                {
+                 HaveDeal=1;
+                 openlong=0;
+                 openshort=0;
+                 break;
+                } 
+                          
+             Sleep (750);       // на всякий случай поспим три четверти секунды если будет ошибка
+            }
+      
+        }
+      
+     if(openlong==0 && openshort==1)  // если у нас флаг на открытие короткой позиции, то
+    	{
+         for (i=1; i<=8; i++) // то будем пробовать 5 раз
+            {
+             RefreshRates();  // обновили значение цен
+             my_ord_sl_pr =  Ask+my_ord_sl;   // высчитали величину цены для стоп лоса
+             my_ord_tp_pr =  Ask-my_ord_tp;    // вычислили вечичину цены для тейк профита
+             myticket=OrderSend(Mysimb,OP_SELL,Mylot,Bid,Slippage, my_ord_sl_pr, my_ord_tp_pr, MyOrdComment,5,CLR_NONE);  // посылаем ордер на сервер
+			 Alert ("4 str Значение my_ord_sl_pr=",my_ord_sl_pr);
+			 Alert ("4 str Значение my_ord_tp_pr=",my_ord_tp_pr);
+			 Alert ("5 str Значение myticket при попытке отправить ордер на сервер=",myticket);
+			 my_ord_sl_pr = NormalizeDouble (my_ord_sl_pr,Digits);
+			 my_ord_tp_pr = NormalizeDouble (my_ord_tp_pr,Digits);
+             if( myticket<0)
+                {
+                 err_i=GetLastError();   
+                 ErrFighting();
+                 Alert ("Возникла ошибка при попытке открыть ордер", TradeErrMas[err_i,1]);
+                 if(Working==false) return;     
+                }else
+                {
+                 HaveDeal=1;
+                 openlong=0;
+                 openshort=0;
+                 break;
+                } 
+                          
+             Sleep (750);       //на всякий случай поспим три четверти секунды если будет ошибка
+            }
+	            
+	    }
+     if (Working==false) return;
+     MyGV =GlobalVariableSet(GVSL,my_ord_sl_pr);
+     if (MyGV==0)
+        {
+	     Alert("Ошибка при записи стоп лоса в глобальную переменную, надо проверить kode");
+     	 Working=false;
+		}
+
+     MyGV =GlobalVariableSet(GVTP,my_ord_tp_pr);
+	 if (MyGV==0)
+        {
+		 Alert("Ошибка при записи тєйк профита в глобальную переменную, надо проверить kode");
+		 Working=false;
+		}
+		
+     MyGV=GlobalVariableSet(GVticket,myticket);
+     if (MyGV==0)
+	    {
+	     Alert("Ошибка при записи тикета в глобальную переменную, надо проверить kode");
+		 Working=false;
+        }
+	 
+	 MyGV=GlobalVariableSet(GVHaveDeal,HaveDeal);
+     if (MyGV==0)
+        {
+	     Alert("Ошибка при записи флага сделки в глобальную переменную, надо проверить kode");
+		 Working=false;
+		}
+
+     mybool=OrderSelect(myticket,SELECT_BY_TICKET,MODE_TRADES);
+	 
+	 if (mybool==false)
+        {
+		 err_i=GetLastError();
+		 Alert(" Ошибка при попытке прочитать значение времени вновь открытого ордера", TradeErrMas[err_i,1]);
+        }
+     GVordOpenTimeDT=OrderOpenTime();
+	 GVordOpenTimevalue=TimeToStr(GVordOpenTimeDT,TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+	 Alert ("Записали строковое значение открытия моего ордера ",GVordOpenTimevalue);
+     yyyy=StringSubstr(GVordOpenTimevalue,0,4);
+     mo=StringSubstr(GVordOpenTimevalue,5,2);
+     dd=StringSubstr(GVordOpenTimevalue,8,2);
+     dd=StringSubstr(GVordOpenTimevalue,8,2);
+     hh=StringSubstr(GVordOpenTimevalue,11,2);
+     mi=StringSubstr(GVordOpenTimevalue,14,2);
+     se=StringSubstr(GVordOpenTimevalue,17,2);
+     GVordOpenTimevalue=StringConcatenate(yyyy,mo,dd,hh,mi,se);
+     GVOrdOpenTimeDBL=StrToDouble(GVordOpenTimevalue);
+     MyGV =GlobalVariableSet(GVordOpenTime,GVOrdOpenTimeDBL);
+     if (MyGV==0)
+	    {
+		Alert("Ошибка при записи значения времени открытия ордера в глобальную переменную, надо проверить kode");
+		 Working=false;
+		} 
+    }   //end func
+
+
+
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//      Функция для обработки ошибок
+//--------------------------------------------------------------------+
+
+void ErrFighting()
+    {  //start func
+     if (err_i<4000)
+        {
+         Alert(TradeErrMas [err_i,0], TradeErrMas[err_i,1],"Номер ошибки ", err_i);
+         switch (err_i)
+            {
+             case 1: 
+			    {
+				 Alert("При данной ошибке рекомендуется перезагрузить компьютер, На данный момент эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 2: 
+			    {
+				 Alert("При данной ошибке рекомендуется перезагрузить компьютер, На данный момент эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 3:
+			    {
+				 Alert("При данной ошибке рекомендуется проверить код эксперта на наличие ошибок. На данный момент эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 4:
+                {
+			     Alert("Попробуем подождать 2 минуты, авось получится"); 
+				 Sleep(120000);
+				 break;
+				}
+             case 5: 
+			    {
+				 Alert("Нужно обновить версию клиента. На данный момент эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 6:
+                {
+                 Alert("На попытку востановить связь есть 2 минуты"); 
+				 Sleep(120000);
+				 break;
+				}
+             case 8:
+                {
+			     Alert("Попробуем покурить 3 минуты, может тогда это не будет сильно часто");
+				 Sleep(180000);
+				 break;
+				}
+             case 9: 
+			    {
+				 Alert("Ну это походу надо было сильно ошибиться что бы так напортачить, надо проверять программный код");
+				 Working=false;
+				 break;
+				}
+             case 64: 
+			    {
+				 Alert("Причины блокировки акаунта мне не ведомы, мож денег должны или их мало, экспет не работает");
+				 Working=false;
+				 break;
+				}
+             case 65:
+                {    
+	             Alert("Где то мы с номером счета ошиблись и главное непонятно в каком месте, эксперт не работает до выяснения");
+				 Working=false;
+				 break;
+				}
+             case 128:
+                {
+                 Alert("Ну че? думаю стоит попробовать заново");
+				 break;
+				}
+             case 129:
+                {
+				 Alert("Ну тут думаю стоит попробовать заново, хотя если ошибка не первый раз выскакивает, то надо проверять код");
+				 break;
+				}
+             case 130:
+                {
+				 Alert("Можно попробовать еще раз, но при часто появлении надо проверять программный код");
+				 break;
+				}
+             case 131:
+                {
+			     Alert("Ну тут надо проверять мою гордость, функцию расчета размера лота, так что эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 132:
+			    {
+				 Alert("Закрыт рынок и что с того? мы покурим 2 часа");Sleep(7200000);
+				 break;
+				}
+             case 134:
+			    {
+				 Alert("Недостаточно значит недостаточно, так что эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 135:
+                {
+                 Alert("Эксперт обновит цены и попробуем снова");
+				 break;
+				}
+             case 136:
+                {
+				 Alert("Непонятно почему нет цен, может подождать 2 минуты, авось появятся");
+				 Sleep(120000);
+				 break;
+				}
+             case 137: 
+			    {
+				 Alert("Мы дадим брокеру люлей, ой нет, дадим брокеры 2 минуты, что б он освободился");
+				 Sleep(120000);
+				 break;
+				}
+             case 138:
+                {
+				 Alert("Опа, уже новые цены, ну мы тогда по новым ценам еще попробуем открыться");
+				 break;
+				}
+             case 141:
+			    {
+				 Alert("Такс, попробуем подождать 3 минуты, авось запросов станет меньше, ну то есть мы их на 3 минуты будет реже посылать");
+				 Sleep(180000);
+				 break;
+				}
+             case 145:
+                {
+                 Alert("А это значит, что надо продумать использование фриз левла более тщательно, Эксперт не работает");
+				 Working=false;
+				 break;
+				}
+             case 146:
+			    {
+				 Alert("Надеемся что за 2 минуты она освободиться");
+				 Sleep(120000);
+				 break;
+				}
+             case 148:
+			    {
+                 Alert("Понаоткрывали понимаешь тут, оказывается лимиты есть, поэтому у вас есть минута позакрывать ордера, пока эксперт не попробует снова послать ордер, после 5 неудачных попыток, сигнал эксперт пропустит ");
+				 Sleep(60000);
+				 break;
+				}
+      
+            }
+        }
+
+
+
+    }// end  func
+
+
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//функция по поиску и учету ордеров открытых экспертом если эксперт один
+//--------------------------------------------------------------------+
+int OrderInspectEO() 
+    {  //start func
+     marginit=MarketInfo(Mysimb,MODE_MARGININIT)/10000*Mylot;// хрен знает почему
+     j=OrdersTotal();
+     
+     pr=0;   // устанавливаем счетчики соответствия на 0
+     sec=0;
+     all_lot=0;
+     CheckAcc=0;
+     
+     if(MyAccBal< marginit)  
+        {
+        Alert("Эксперт потерпел крах, поэтому он не работает, либо же лот слишком большое для такого размера депозита"); 
+        Working=false;
+        return(0);
+        }
+     
+     if (HaveDeal==0 && j==0) return(0); // елсли открытых сделок нет, то выходим
+     if (HaveDeal==0 && j>0)
+        {
+		 Alert("Эксперт нашел не свои открытые ордера, хоть по условиям работы он должен действовать в одиночку, поэтому он прекращает работу");
+		 Working=false;
+		 return(0);
+		}
+     if (HaveDeal==1 && j>1) 
+	    {
+		 Alert("Эксперт нашел кроме своего, еще открытые ордера, хоть по условиям работы он должен действовать в одиночку, поэтому он прекращает работу");
+		 Working=false;
+		 return(0);
+		}
+     if (HaveDeal==1 && j==1) // тут проверка наш ли это ордер в текущей сессии
+        {
+         mybool=OrderSelect(0,SELECT_BY_POS,MODE_TRADES);
+         // основная сверка
+         if (OrderMagicNumber()==5)pr=pr+1;
+         if (myticket==OrderTicket()) pr=pr+1;
+         if (GVordOpenTimeDT==OrderOpenTime()) pr=pr+1;
+         subordcomstr=OrderComment();
+         subordcomint=StrToInteger(subordcomstr);
+         if (subordcomint==10)pr=pr+1;
+         // дополнительная сверка
+       
+         if (Mylot==OrderLots()) sec=sec+1;
+         if (my_ord_tp_pr==NormalizeDouble (OrderTakeProfit(), Digits) ) sec=sec+1;
+         if (my_ord_sl_pr==NormalizeDouble (OrderStopLoss(),   Digits) ) sec=sec+1;
+         Comtext6=StringConcatenate("При поиске своего ордера эксперт нашел ",pr," основных совпадений и ",sec, "дополнительных");
+         if (pr>=2 &&sec>=2) 
+            {
+             return(0);
+            }else
+            {
+			 Alert("Эксперт нашел не свой открытый ордер, хотя это больше похоже на ошибку, надо проверять алгоритм на всякий случай, Эксперт не работает");
+			 Working=false;
+			 return(0);
+			}
+        }
+    
+     if (HaveDeal==1 && j==0)// тут надо идти в историю и искать там наш ордер, и прибавлять ордер профит к балансу эксперта, плюс проверить наш закрытый орде на модификацию со стороны пульзователя
+        {
+		 j=OrdersHistoryTotal();
+		 for (i=1; i<=j; i++)
+		    {
+             mybool=OrderSelect(j-1,SELECT_BY_POS,MODE_HISTORY);
+             if (mybool==true)
+                {
+                 if (OrderMagicNumber()==5)pr=pr+1;
+                 if (myticket==OrderTicket()) pr=pr+1;
+                 if (GVordOpenTimeDT==OrderOpenTime()) pr=pr+1;
+                 subordcomstr=OrderComment();
+                 subordcomint=StrToInteger(subordcomstr);
+                 if (subordcomint==10)pr=pr+1;
+                 //-----------     
+                 // дополнительная сверка
+                 if (Mylot==OrderLots()) sec=sec+1;
+                 if (my_ord_tp_pr==NormalizeDouble (OrderTakeProfit(),Digits) ) sec=sec+1;
+                 if (my_ord_sl_pr==NormalizeDouble (OrderStopLoss(),Digits)   ) sec=sec+1;
+                 Comtext6=StringConcatenate("При поиске своего ордера эксперт нашел ",pr," основных совпадений и ",sec, "дополнительных");
+                 if (pr>=2 && sec>=2)   //  если 
+                    {
+                     Alert("Ордер эксперта закрылся");
+                     HaveDeal=0;
+                     MyGV=GlobalVariableSet(GVHaveDeal,HaveDeal);
+                     MyAccBal=AccountBalance();
+                     MyGV =GlobalVariableSet(GVMyAccBal,MyAccBal);
+                     Comtext6=" ";
+                     if (NormalizeDouble(OrderClosePrice(),Digits)==my_ord_tp_pr ||NormalizeDouble(OrderClosePrice(),Digits)==my_ord_sl_pr)
+                        {
+                         return(0);
+                        }else
+					    {
+					     Alert("Нашли орддер эксперта, но цена закрытий отличается от заданным параметров, походу его изменили, проверить алгоритм надо, пока не работаем");
+					     Working=false;
+					     return(0);
+					    }
+               
+                    }else
+                    {
+                     Alert("Мои параметры в переменных Тикет=",myticket," опен тайм=",TimeToStr(GVordOpenTimeDT,TIME_DATE|TIME_MINUTES|TIME_SECONDS)," Magic number  Comment=",MyOrdComment," LOT=",Mylot," TP=",my_ord_tp_pr," SL=",my_ord_sl_pr);
+                     Alert ("параметры с ордер слелект, Тикет=",OrderTicket(),"Опен Тайм=",TimeToStr(OrderOpenTime(),TIME_DATE|TIME_MINUTES|TIME_SECONDS)," Magic=",OrderMagicNumber()," Comment=",OrderComment(), " Lot=",OrderLots()," TP=",OrderTakeProfit()," SL=",OrderStopLoss());
+                     Alert ("Странно но єксперт нe нaшел свой ордер, надо проверять алгоритм поиска");
+                    }
+         
+                }else Alert ("Вернулась ошибка при поиске своего ордера в истории" , GetLastError());
+		    }
+        }
+    return(0);   //------ 
+    }  // end func
+	
+	
+//#####################################################################
+//#####################################################################
+//--------------------------------------------------------------------+
+//функция по поиску и учету ордеров открытых экспертом при работе совместно с трейдером
+//--------------------------------------------------------------------+
+int OrderInspect() 
+    {  //start func
+     marginit=MarketInfo(Mysimb,MODE_MARGINREQUIRED)/ 10000*Mylot;// стандартній лот умножаем на наше количество лотов проверка маржин инит для моего єксперта
+     j=OrdersTotal();
+     pr=0;   // устанавливаем счетчики соответствия на 0
+     sec=0;
+     all_lot=0;
+     CheckAcc=0;
+     if(MyAccBal< marginit) 
+        {
+		 Alert("Эксперт потерпел крах, поэтому он не работает, либо же лот слишком большое для такого размера депозита");
+		 Working=false;
+		 return(0);
+	    }
+	 marginit=MarketInfo(Mysimb,MODE_MARGINREQUIRED)/ 10000;  // проверка для открытых позиций
+     if (HaveDeal==0 && j>0)
+        {
+         for (i=1;  i<=j; i++)
+            {                   
+             mybool=OrderSelect(i-1,SELECT_BY_POS,MODE_TRADES);
+             all_lot=OrderLots()+all_lot;
+            }
+         CheckAcc =marginit* all_lot;
+         x=AccountBalance()- MyAccBal+CheckAcc;
+         if (x<0)
+            {
+             Alert("Торговая стратегия трейдера оказалась убыточной, при совместном использования капитала обнаружены ошибки, просьба перезапустить эксперта и выбрать другое распределение капитала, на данный момент эксперт работает самостоятельно");
+             for (i=1;  i<=j; i++)
+                {
+                 if (OrderSelect(i-1,SELECT_BY_POS,MODE_TRADES)==true)
+                    {
+                     k=0;
+                     while(true)
+                        {
+                         Sleep (1000);
+                         k++;
+                         ticket= OrderTicket();
+                         lots=OrderLots(); 
+                         price=Ask-1*Point;
+                         mybool=OrderClose(ticket,lots,price,4);
+                         if (mybool==true)
+                            {
+                             break;
+                            }else
+                            {
+							 Alert("при попытке закрыть ордер всплыла ошибка ",GetLastError());
+							}
+                         if (k==100)
+                            {
+							 Alert("Выход из цикла закрытия ордеров по счетчику, странно ");
+							 break;
+							}
+                        }
+                    }else Alert ("Вернулась ошибка при попытке закрыть открытые ордера при совместном использовании капитала" ,GetLastError());
+                }
+             MyAccBal=AccountBalance(); 
+             MyInitAccBal=AccountBalance(); 
+             OthAccBal=0;
+             OthInitAccBal=0;
+             ExpertOnly=1;
+            }
+        }
+     if (HaveDeal==1)  // если есть открытая сделка
+        {  
+        if (j==0)   // если сейчас ордеров текущих 0, то
+            {  // если текущио ордеров 0
+             j=OrdersHistoryTotal();  // идем в историю
+             for (i=1; i<=j; i++)
+                {
+                 pr=0;  // обнуляем счетчики
+                 sec=0;
+                 if (OrderSelect(i-1,SELECT_BY_POS,MODE_HISTORY)==true)
+                    {
+                     // основная сверка
+                     if (OrderMagicNumber()==5)pr=pr+1;
+                     if (myticket==OrderTicket()) pr=pr+1;
+                     if (GVordOpenTimeDT==OrderOpenTime()) {pr=pr+1;}
+                     subordcomstr=OrderComment();
+                     subordcomint=StrToInteger(subordcomstr);
+                     if (subordcomint==10)pr=pr+1;
+                        
+                     // дополнительная сверка
+                     if (Mylot==OrderLots()) sec=sec+1;
+                     if (my_ord_tp_pr==NormalizeDouble (OrderTakeProfit(),Digits) ) sec=sec+1;
+                     if (my_ord_sl_pr==NormalizeDouble (OrderStopLoss(),Digits)   ) sec=sec+1;
+                     //  ----
+                     Comtext6=StringConcatenate("При поиске своего ордера эксперт нашел ",pr," основных совпадений и ",sec, "дополнительных");   
+                     if (pr>=2 && sec>=2)  // если єто наш ордер в истории то
+                        {
+                         Alert("Ордер эксперта закрылся");
+                         HaveDeal=0;
+                         MyGV=GlobalVariableSet(GVHaveDeal,HaveDeal);
+                         MyAccBal=MyAccBal+OrderProfit()-OrderSwap();
+                         MyGV =GlobalVariableSet(GVMyAccBal,MyAccBal);
+                         if (NormalizeDouble(OrderClosePrice(),Digits)==my_ord_tp_pr ||NormalizeDouble(OrderClosePrice(),Digits)==my_ord_sl_pr)
+						    {
+							 Alert("Нашли орддер эксперта, но цена закрытий отличается от заданным параметров, походу его изменили, проверить алгоритм надо, пока не работаем");
+							 Working=false;
+							 return(0);
+							}
+                         
+                                
+                         else if (i-1==j) 
+						    {
+						     Alert ("За всю историю не нашелся ордер єксперта, возможна она удалена, дальнейшая работа невозможна, єксперт не работает");
+						     Working=false;
+						     return(0);
+						    }
+                        } 
+						
+					}else
+					{
+					 Alert ("Вернулась ошибка при поиске своего ордера в истории" , GetLastError());
+					}
+                }
+                    
+            } else  //  если ордеров сейчас не 0
+            // выше верно       
+            {
+             for (i=1; i<=j; i++)
+             pr=0;    // обнулили счетчики
+             sec=0;
+             if (OrderSelect(i-1,SELECT_BY_POS,MODE_TRADES)==true)
+                {
+                 // основная сверка
+                 if (OrderMagicNumber()==5)pr=pr+1;
+                 if (myticket==OrderTicket()) pr=pr+1;
+                 if (GVordOpenTimeDT==OrderOpenTime()) {pr=pr+1;}
+                 subordcomstr=OrderComment();
+                 subordcomint=StrToInteger(subordcomstr);
+                 if (subordcomint==10)pr=pr+1;
+               
+                 // дополнительная сверка
+                 if (Mylot==OrderLots()) sec=sec+1;
+                 if (my_ord_tp_pr==NormalizeDouble (OrderTakeProfit(),Digits) ) sec=sec+1;
+                 if (my_ord_sl_pr==NormalizeDouble (OrderStopLoss(),Digits)   ) sec=sec+1;
+                 Comtext6=StringConcatenate("При поиске своего ордера эксперт нашел ",pr," основных совпадений и ",sec, "дополнительных");
+                 if (pr>=2 && sec>=2)  return(0);   // если єто наш ордер в отрытых то выходим иначе
+                 else  if (i-1==j)
+                    {
+                     j=OrdersHistoryTotal();
+                     for (i=1; i<=j; i++)
+                        {
+                         pr=0;  // обнуляем счетчики
+                         sec=0;
+                         if (OrderSelect(i-1,SELECT_BY_POS,MODE_HISTORY)==true)
+                            {
+                             // основная сверка
+                             if (OrderMagicNumber()==5)pr=pr+1;
+                             if (myticket==OrderTicket()) pr=pr+1;
+                             if (GVordOpenTimeDT==OrderOpenTime()) {pr=pr+1;}
+                             subordcomstr=OrderComment();
+                             subordcomint=StrToInteger(subordcomstr);
+                             if (subordcomint==10)pr=pr+1;
+              
+                             // дополнительная сверка
+                             if (Mylot==OrderLots()) sec=sec+1;
+                             if (my_ord_tp_pr==NormalizeDouble (OrderTakeProfit(),Digits) ) sec=sec+1;
+                             if (my_ord_sl_pr==NormalizeDouble (OrderStopLoss(),Digits)   ) sec=sec+1;
+                             Comtext6=StringConcatenate("При поиске своего ордера эксперт нашел ",pr," основных совпадений и ",sec, "дополнительных");
+                             if (pr>=2 && sec>=2)  // если єто наш ордер в истории то
+                                {
+                                 Alert("Ордер эксперта закрылся");
+                                 HaveDeal=0;
+                                 MyGV=GlobalVariableSet(GVHaveDeal,HaveDeal);
+                                 MyAccBal=MyAccBal+OrderProfit();
+                                 MyGV =GlobalVariableSet(GVMyAccBal,MyAccBal);
+                                 return(0);
+                                }else if (i-1==j) 
+								{
+								 Alert ("За всю историю не нашелся ордер єксперта, возможна она удалена, дальнейшая работа невозможна, єксперт не работает");
+								 Working=false;
+								 return(0);
+								}
+                 
+                            } else Alert ("Вернулась ошибка при поиске своего ордера в истории" , GetLastError());
+                        }
+                    }
+             
+                } else Alert ("Вернулась ошибка при поиске своего ордера в открытых" , GetLastError());
+            }  // если ордеров сейчас не о
+        } // если есть открытая сделка
+     return(0);
+	}
